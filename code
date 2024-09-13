@@ -1,0 +1,420 @@
+library(shiny)
+library(dplyr)
+library(leaflet)
+library(leaflet.extras)
+library(ggplot2)
+library(RColorBrewer)
+library(plotly)
+library(forecast)
+library(tidyr)
+library(dbscan)
+library(spdep)
+library(shinydashboard)
+library(sf)
+
+setwd("C:/Users/Bhasker/Downloads")
+# Read dataset
+data <- read.csv("cleaned_Violence_Reduction_-_Victims_of_Homicides_and_Non-Fatal_Shootings.csv")
+data$DATE <- as.Date(data$DATE, format = "%m/%d/%Y")
+crime_types <- unique(data$VICTIMIZATION_FBI_DESCR[data$VICTIMIZATION_FBI_DESCR != ""])
+color_palette <- colorFactor(palette = brewer.pal(n = length(crime_types), "Set1"), domain = crime_types)
+
+# Helper function to create filter UI
+filter_ui <- function() {
+  tagList(
+    checkboxInput("gunshot", "Incidents with Gunshot", value = TRUE),
+    selectInput("beat", "Select Police Beat:", choices = c("", sort(unique(data$BEAT)))),
+    dateRangeInput("daterange", "Select Date Range:",
+                   start = format(min(data$DATE, na.rm = TRUE), "%Y-%m-%d"),
+                   end = format(max(data$DATE, na.rm = TRUE), "%Y-%m-%d"),
+                   min = format(min(data$DATE, na.rm = TRUE), "%Y-%m-%d"),
+                   max = format(max(data$DATE, na.rm = TRUE), "%Y-%m-%d")),
+    selectInput("age_group", "Select Age Group:", choices = c("All", unique(data$AGE))),
+    selectInput("sex", "Select Sex:", choices = c("All", unique(data$SEX))),
+    selectInput("race", "Select Race:", choices = c("All", unique(data$RACE)))
+  )
+}
+
+# UI components
+ui <- dashboardPage(
+  dashboardHeader(title = "An Exploratory Analysis of Victimization Incidents"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Tutorial", tabName = "tutorial", icon = icon("info-circle")),
+      menuItem("Main", tabName = "main", icon = icon("dashboard")),
+      menuItem("Time Series Analysis", tabName = "time_series", icon = icon("chart-line")),
+      menuItem("Line Graph", tabName = "line_graph", icon = icon("line-chart")),
+      menuItem("Spatial Analysis", tabName = "spatial_analysis", icon = icon("globe"))
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "tutorial",
+              h2("An Eploratory Analysis Of Victimization Incidents"),
+              p("Welcome to the Victimization Incidents Dashboard! This dashboard provides various visualizations to help you analyze crime data. You can navigate through the tabs to explore different types of analyses."),
+              p("Here's a quick guide to get you started:"),
+              list(
+                strong("Main"), " - View a map and bar chart of crime incidents.",
+                strong("Time Series Analysis"), " - Analyze trends over time with time series plots.",
+                strong("Line Graph"), " - View line graphs showing crime trends by day and month.",
+                strong("Spatial Analysis"), " - Explore spatial patterns with heatmaps and clustering."
+              ),
+              p("Use the filters on the left sidebar to customize your view and drill down into specific data. Each visualization comes with a brief description to help you understand what it depicts."),
+              tags$style(HTML("
+              h2 { font-size: 20px; } 
+              p { font-size: 16px; } 
+              strong { font-size: 16px; } 
+              body, html { font-family: Arial, sans-serif; } 
+            "))
+      ),
+      tabItem(tabName = "main",
+              fluidRow(
+                box(title = "Filters", status = "primary", solidHeader = TRUE, width = 4, filter_ui()),
+                box(title = "Map and Bar Chart", status = "primary", solidHeader = TRUE, width = 8,
+                    h3("Crime Map"),
+                    leafletOutput("crime_map"),
+                    p("This map shows the locations of crime incidents. Use the filters to focus on specific criteria, such as date range or type of crime."),
+                    p("The map uses circle markers to represent crime incidents, with colors indicating different crime types. Markers are clustered for better visibility."),
+                    br(),
+                    h3("Crime Counts by Type"),
+                    plotlyOutput("crime_bar_chart"),
+                    p("This bar chart displays the counts of different types of crime incidents. The height of each bar represents the number of incidents for each crime type."),
+                    p("Use this chart to compare the frequency of different crime types. Hover over the bars to see detailed counts.")
+                )
+              ),
+              p("This page provides an overview of crime incidents with a map and bar chart. Use the filters to customize your view.")
+      ),
+      tabItem(tabName = "time_series",
+              fluidRow(
+                box(title = "Filters", status = "primary", solidHeader = TRUE, width = 4, filter_ui()),
+                box(title = "Time Series Analysis", status = "primary", solidHeader = TRUE, width = 8,
+                    h3("Crime Trends by Date"),
+                    plotlyOutput("crime_line_graph"),
+                    p("This plot shows the daily trends of different types of crime incidents. Use it to see how crime rates vary over time."),
+                    p("The plot uses LOESS smoothing to highlight trends. Different colors represent different crime types."),
+                    br(),
+                    h3("Crime Incident Forecasting"),
+                    plotlyOutput("crime_forecast"),
+                    p("This plot shows the forecast of crime incidents for the next 30 days. The blue and red lines represent the forecasted values using ARIMA and STLF models respectively. Confidence intervals are shaded to indicate uncertainty in the forecasts."),
+                    p("ARIMA (AutoRegressive Integrated Moving Average) and STLF (Seasonal and Trend decomposition using Loess Forecasting) are time series forecasting methods. They help predict future crime incidents based on historical data.
+                      STLF decomposes the time series into seasonal patterns. It helps identify recurring seasonal effects, such as monthly or weekly variations.
+                      The ARIMA model captures the overall trend in your time series data. The trend component represents the long-term movement or growth")
+                )
+              ),
+              p("This page provides a time series analysis of crime incidents. Explore trends over time, seasonal patterns, and forecast future incidents.")
+      ),
+      tabItem(tabName = "line_graph",
+              fluidRow(
+                box(title = "Filters", status = "primary", solidHeader = TRUE, width = 4, filter_ui()),
+                box(title = "Line Graph", status = "primary", solidHeader = TRUE, width = 8,
+                    h3("Crime Counts by Day of Week"),
+                    plotlyOutput("crime_day_of_week"),
+                    p("This plot shows the distribution of crime incidents by day of the week. It helps in identifying if certain days have higher crime rates."),
+                    p("Use this graph to observe weekly patterns in crime incidents. Different colors represent different crime types."),
+                    br(),
+                    h3("Crime Counts by Month of Year"),
+                    plotlyOutput("crime_month_of_year"),
+                    p("This plot shows the distribution of crime incidents by month of the year. It helps in identifying if certain months have higher crime rates."),
+                    p("Use this graph to observe seasonal patterns in crime incidents. The bars represent monthly counts, and lines show trends over months.")
+                )
+              ),
+              p("This page provides line graphs showing crime trends by day of the week and month of the year. Use the filters to explore specific trends.")
+      ),
+      tabItem(tabName = "spatial_analysis",
+              fluidRow(
+                box(title = "Spatial Analysis", status = "primary", solidHeader = TRUE, width = 12,
+                    h3("Crime Heatmap"),
+                    leafletOutput("crime_heatmap"),
+                    p("This heatmap visualizes the intensity of crime incidents in different areas. The color intensity represents the concentration of incidents."),
+                    p("Use the heatmap to identify hotspots of crime incidents. Darker areas indicate higher concentrations of incidents."),
+                    br(),
+                    h3("DBSCAN Clustering of Crime Locations"),
+                    plotlyOutput("crime_clusters"),
+                    p("This plot shows the clustering of crime incidents using the DBSCAN algorithm. Each cluster is represented by a different color, helping to identify hotspots of crime. Noise points (those not belonging to any cluster) are highlighted differently."),
+                    p("DBSCAN (Density-Based Spatial Clustering of Applications with Noise) is a clustering algorithm used to identify clusters in spatial data. It helps in finding areas with high densities of crime incidents.")
+                )
+              ),
+              p("This page provides a spatial analysis of crime incidents. Explore heatmaps and clusters to identify spatial patterns. The legend on the heatmap helps you understand the intensity of incidents.")
+      )
+    )
+  )
+)
+server <- function(input, output, session) {
+  # Convert DATE column to Date format and filter out invalid dates
+  data <- data %>%
+    mutate(DATE = as.Date(DATE, format = "%m/%d/%Y")) %>%
+    filter(!is.na(DATE) & is.finite(DATE))
+  
+  # Filter data based on selected criteria
+  filtered_data <- reactive({
+    
+    data_filtered <- data
+    
+    if (input$beat != "") {
+      data_filtered <- data_filtered %>% filter(BEAT == input$beat)
+    }
+    
+    if (!is.null(input$daterange)) {
+      data_filtered <- data_filtered %>% filter(DATE >= input$daterange[1] & DATE <= input$daterange[2])
+    }
+    
+    if (input$gunshot) {
+      data_filtered <- data_filtered %>% filter(GUNSHOT_INJURY_I == "YES")
+    }
+    
+    if (input$age_group != "All") {
+      data_filtered <- data_filtered %>% filter(AGE == input$age_group)
+    }
+    
+    if (input$sex != "All") {
+      data_filtered <- data_filtered %>% filter(SEX == input$sex)
+    }
+    
+    if (input$race != "All") {
+      data_filtered <- data_filtered %>% filter(RACE == input$race)
+    }
+    
+    data_filtered
+  })
+  
+  # Render leaflet map with clusters
+  output$crime_map <- renderLeaflet({
+    data_to_map <- filtered_data()
+    
+    if (nrow(data_to_map) == 0) {
+      return(NULL)
+    }
+    
+    leaflet(data = data_to_map) %>%
+      addTiles() %>%
+      addCircleMarkers(
+        clusterOptions = markerClusterOptions(),
+        color = ~color_palette(VICTIMIZATION_FBI_DESCR),
+        fillOpacity = 0.7,
+        lng = ~LONGITUDE,
+        lat = ~LATITUDE,
+        popup = ~paste(
+          "Location: ", LOCATION_DESCRIPTION,
+          "<br>Victimization Description: ", VICTIMIZATION_FBI_DESCR,
+          "<br>Gunshot: ", GUNSHOT_INJURY_I,
+          "<br>Police Beat: ", BEAT,
+          "<br>Date: ", DATE
+        )
+      ) %>%
+      addLegend("topright", pal = color_palette, values = ~VICTIMIZATION_FBI_DESCR,
+                title = "Victimization Type", opacity = 1)
+  })
+  
+  # Render bar chart for crime counts by type
+  output$crime_bar_chart <- renderPlotly({
+    crime_counts <- filtered_data() %>%
+      group_by(VICTIMIZATION_FBI_DESCR) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      mutate(hover_text = paste("Crime Type: ", VICTIMIZATION_FBI_DESCR, "<br>Count: ", count))
+    
+    if (nrow(crime_counts) == 0) {
+      return(NULL)
+    }
+    
+    # Create the bar chart with enhancements
+    p <- ggplot(crime_counts, aes(x = reorder(VICTIMIZATION_FBI_DESCR, count), y = count, fill = VICTIMIZATION_FBI_DESCR, text = hover_text)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = count), hjust = -0.2, size = 3.5, color = "black") +
+      scale_fill_brewer(palette = "Set1") +
+      labs(x = "Crime Type", y = "Count") +
+      theme_minimal() +
+      theme(
+        axis.title.x = element_text(size = 12, face = "bold"),
+        axis.title.y = element_text(size = 12, face = "bold"),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+        legend.position = "none"
+      ) +
+      coord_flip()
+    
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        hovermode = "closest",
+        showlegend = FALSE,
+        margin = list(l = 150)  
+      )
+  })
+  
+  
+  
+  # Render ARIMA forecast
+  output$crime_forecast <- renderPlotly({
+    time_series_data <- filtered_data() %>%
+      group_by(DATE) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      complete(DATE = seq.Date(min(data$DATE), max(data$DATE), by = "day"), fill = list(count = 0))
+    
+    if (nrow(time_series_data) == 0) {
+      return(NULL)
+    }
+    
+    ts_data <- ts(time_series_data$count, frequency = 365)
+    arima_fit <- auto.arima(ts_data)
+    stlf_fit <- stlf(ts_data)
+    
+    forecast_data <- data.frame(
+      DATE = seq.Date(max(time_series_data$DATE) + 1, by = "day", length.out = 30),
+      arima_forecast = forecast(arima_fit, h = 30)$mean,
+      stlf_forecast = forecast(stlf_fit, h = 30)$mean,
+      arima_lower = forecast(arima_fit, h = 30)$lower[,2],
+      arima_upper = forecast(arima_fit, h = 30)$upper[,2],
+      stlf_lower = forecast(stlf_fit, h = 30)$lower[,2],
+      stlf_upper = forecast(stlf_fit, h = 30)$upper[,2]
+    )
+    
+    forecast_plot <- ggplot(forecast_data, aes(x = DATE)) +
+      geom_ribbon(aes(ymin = arima_lower, ymax = arima_upper), fill = "blue", alpha = 0.2) +
+      geom_ribbon(aes(ymin = stlf_lower, ymax = stlf_upper), fill = "red", alpha = 0.2) +
+      geom_line(aes(y = arima_forecast, color = "ARIMA Forecast")) +
+      geom_line(aes(y = stlf_forecast, color = "STLF Forecast")) +
+      labs(title = "Crime Incident Forecasting for Next 30 Days", x = "Date", y = "Forecasted Count", color = "Model") +
+      theme_minimal()
+    
+    ggplotly(forecast_plot)
+  })
+  
+  # Render line graph for crime trends by date
+  output$crime_line_graph <- renderPlotly({
+    line_data <- filtered_data() %>%
+      group_by(DATE, VICTIMIZATION_FBI_DESCR) %>%
+      summarise(count = n(), .groups = 'drop')
+    
+    if (nrow(line_data) == 0) {
+      return(NULL)
+    }
+    
+    p <- ggplot(line_data, aes(x = DATE, y = count, color = VICTIMIZATION_FBI_DESCR)) +
+      geom_smooth(aes(group = VICTIMIZATION_FBI_DESCR), se = FALSE, method = "loess", span = 0.5) +  # Adjust smoothing
+      geom_point() +
+      labs(x = "Date", y = "Count", title = "Crime Trends by Date", color = "Crime Type") +
+      scale_color_brewer(palette = "Set1") +  # New color palette
+      theme_minimal() +
+      theme(legend.position = "top", text = element_text(size = 12))  # Increase font size
+    
+    ggplotly(p, tooltip = c("x", "y", "color"))
+  })  
+  
+  # Render day of week plot
+  output$crime_day_of_week <- renderPlotly({
+    day_data <- filtered_data() %>%
+      mutate(DayOfWeek = weekdays(DATE)) %>%
+      group_by(DayOfWeek, VICTIMIZATION_FBI_DESCR) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      ungroup() %>%
+      mutate(DayOfWeek = factor(DayOfWeek, levels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")))
+    
+    if (nrow(day_data) == 0) {
+      return(NULL)
+    }
+    
+    p <- ggplot(day_data, aes(x = DayOfWeek, y = count, fill = VICTIMIZATION_FBI_DESCR, group = VICTIMIZATION_FBI_DESCR)) +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +  # Adjust bar width
+      geom_line(aes(group = VICTIMIZATION_FBI_DESCR, color = VICTIMIZATION_FBI_DESCR), linewidth = 1) +
+      labs(x = "Day of Week", y = "Count", title = "Crime Counts by Day of Week", fill = "Crime Type") +
+      scale_fill_brewer(palette = "Set1") +
+      scale_color_brewer(palette = "Set1") +
+      theme_minimal() +
+      theme(text = element_text(size = 12))
+    
+    ggplotly(p, tooltip = c("x", "y", "fill"))
+  })  
+  
+  # Render month of year plot
+  output$crime_month_of_year <- renderPlotly({
+    month_data <- filtered_data() %>%
+      mutate(MonthOfYear = format(DATE, "%B")) %>%
+      group_by(MonthOfYear, VICTIMIZATION_FBI_DESCR) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      ungroup() %>%
+      mutate(MonthOfYear = factor(MonthOfYear, levels = month.name))
+    
+    if (nrow(month_data) == 0) {
+      return(NULL)
+    }
+    
+    p <- ggplot(month_data, aes(x = MonthOfYear, y = count, fill = VICTIMIZATION_FBI_DESCR, group = VICTIMIZATION_FBI_DESCR)) +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +
+      geom_line(aes(group = VICTIMIZATION_FBI_DESCR, color = VICTIMIZATION_FBI_DESCR), linewidth = 1) +  # Add lines for trend
+      labs(x = "Month of Year", y = "Count", title = "Crime Counts by Month of Year", fill = "Crime Type") +
+      scale_fill_brewer(palette = "Set1") +
+      scale_color_brewer(palette = "Set1") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis text
+            text = element_text(size = 12))
+    
+    ggplotly(p, tooltip = c("x", "y", "fill"))
+  })
+  
+  # Render spatial analysis: heatmap
+  shapefile_path <- "C:/Users/Bhasker/Downloads/chicago"
+  chicago_shape <- st_read(shapefile_path)
+  
+  # Placeholder for your crime data
+  crime_data <- data.frame(
+    LONGITUDE = runif(100, min = -87.9401, max = -87.5237),
+    LATITUDE = runif(100, min = 41.6445, max = 42.0230),
+    count = sample(1:10, 100, replace = TRUE)
+  )
+
+  crime_data_sf <- st_as_sf(crime_data, coords = c("LONGITUDE", "LATITUDE"), crs = st_crs(chicago_shape))
+  crime_data_within <- st_intersection(crime_data_sf, chicago_shape)
+  
+  # Render the heatmap
+  output$crime_heatmap <- renderLeaflet({
+    if (nrow(crime_data_within) == 0) {
+      return(NULL)
+    }
+    
+    leaflet() %>%
+      addProviderTiles("CartoDB.Positron") %>%
+      addPolygons(data = chicago_shape, color = "#444444", weight = 1, smoothFactor = 0.5,
+                  opacity = 1.0, fillOpacity = 0.5,
+                  highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE)) %>%
+      addHeatmap(
+        data = crime_data_within,
+        intensity = ~count, blur = 20, max = 0.05, radius = 15
+      ) %>%
+      addLegend(
+        position = "bottomright",
+        pal = colorNumeric("viridis", domain = NULL),
+        values = seq(0, 1, length.out = 100),
+        title = "Heatmap Intensity",
+        opacity = 1
+      )
+  })
+  
+  # Render clustering for spatial analysis
+  output$crime_clusters <- renderPlotly({
+    data_to_cluster <- filtered_data() %>%
+      select(LONGITUDE, LATITUDE, VICTIMIZATION_FBI_DESCR, LOCATION_DESCRIPTION, BEAT)
+    
+    if (nrow(data_to_cluster) == 0) {
+      return(NULL)
+    }
+    
+    # Remove rows with missing data
+    data_to_cluster <- na.omit(data_to_cluster)
+    data_to_cluster <- data_to_cluster %>%
+      mutate(tooltip_text = paste("Crime Type:",VICTIMIZATION_FBI_DESCR , "<br>Location:", LOCATION_DESCRIPTION, "<br>Beat: ", BEAT))
+    # Apply DBSCAN clustering
+    db <- dbscan(data_to_cluster %>% select(LONGITUDE, LATITUDE), eps = 0.01, minPts = 5)
+    cluster_data <- data_to_cluster %>%
+      mutate(cluster = as.factor(db$cluster))
+    
+    cluster_plot <- ggplot(cluster_data, aes(x = LONGITUDE, y = LATITUDE, color = cluster, text = tooltip_text)) +
+      geom_point(alpha = 0.6) +
+      labs(title = "DBSCAN Clustering of Crime Locations", x = "Longitude", y = "Latitude", color = "Cluster") +
+      theme_minimal()
+    
+    ggplotly(cluster_plot)
+  })
+  
+}
+
+shinyApp(ui, server)
